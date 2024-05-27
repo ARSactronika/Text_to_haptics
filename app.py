@@ -1,3 +1,4 @@
+import os
 from flask import Flask, request, jsonify, render_template_string
 from transformers import pipeline
 
@@ -10,8 +11,8 @@ classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnl
 # Initialize Flask app
 app = Flask(__name__)
 
-# Define your authentication key
-AUTH_KEY = 'my_secret_auth_key'
+# Define your authentication key from environment variable
+AUTH_KEY = os.getenv('AUTH_KEY')
 
 # Define the HTML template for the interactive interface
 html_template = """
