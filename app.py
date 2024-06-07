@@ -1,13 +1,21 @@
 from flask import Flask, request, jsonify, render_template_string, send_from_directory
-import requests
+import aiohttp
+import asyncio
 import os
 
-# Define the classes
-classes = ["fire", "water", "air", "earth", "electrical", "supernatural", "weapons", "user-interface", "materials", "mechanics"]
+# Define the classes for text classification
+main_classes = [
+    'air', 'avatar', 'cinematic', 'earth', 'electrical', 'essentials', 'fire',
+    'game', 'materials', 'mechanics', 'spells', 'supernatural', 'user interface',
+    'water', 'weapons'
+]
+
+# Define the classes for position classification
+position_classes = ["front", "back", "right", "left"]
 
 # Define the Hugging Face API endpoint and your API key
 API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-mnli"
-API_KEY = "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"  # Hugging Face API key
+API_KEY = "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"  # Hugging Face API key
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -55,11 +63,11 @@ html_template = """
             const resultElement = document.getElementById('result');
             const audioPlayer = document.getElementById('audio-player');
             
-            if (result.class) {
-                resultElement.innerText = `Class: ${result.class}`;
+            if (result.class && result.position) {
+                resultElement.innerText = `Class: ${result.class}, Position: ${result.position}`;
                 audioPlayer.src = `/audio/${result.class}.wav`;
                 audioPlayer.play();
-                console.log(`Classified as: ${result.class}`);
+                console.log(`Classified as: ${result.class}, Position: ${result.position}`);
             } else {
                 resultElement.innerText = `Error: ${result.error}`;
                 audioPlayer.src = '';
@@ -70,8 +78,7 @@ html_template = """
 </html>
 """
 
-# Define the classification function that makes an API call
-def classify_text(text, candidate_labels):
+async def classify_text(session, text, candidate_labels):
     headers = {
         'Authorization': f'Bearer {API_KEY}',
         'Content-Type': 'application/json'
@@ -82,38 +89,48 @@ def classify_text(text, candidate_labels):
             "candidate_labels": candidate_labels
         }
     }
-    response = requests.post(API_URL, headers=headers, json=payload)
-    if response.status_code == 200:
-        result = response.json()
-        predicted_class = result['labels'][0]
-        return predicted_class
-    else:
-        raise Exception(f"API request failed with status code {response.status_code}: {response.text}")
+    async with session.post(API_URL, headers=headers, json=payload) as response:
+        if response.status == 200:
+            result = await response.json()
+            return result['labels'][0], result['scores'][0]
+        else:
+            raise Exception(f"API request failed with status code {response.status}: {await response.text()}")
 
-# Serve the HTML interface
+async def classify_all(text):
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for i in range(0, len(main_classes), 10):
+            chunk = main_classes[i:i+10]
+            tasks.append(classify_text(session, text, chunk))
+        
+        results = await asyncio.gather(*tasks)
+        best_class, best_score = max(results, key=lambda x: x[1])
+        
+        position = await classify_text(session, text, position_classes)
+        
+        return best_class, position[0]
+
 @app.route('/')
 def index():
     return render_template_string(html_template, auth_key=AUTH_KEY)
 
-# Define the API endpoint
 @app.route('/classify', methods=['POST'])
-def classify():
+async def classify():
     auth_key = request.headers.get('Authorization')
-    if (auth_key != AUTH_KEY):
+    if auth_key != AUTH_KEY:
         return jsonify({'error': 'Unauthorized access'}), 401
 
     data = request.get_json()
     text = data.get('text', '')
-    if text:
-        try:
-            predicted_class = classify_text(text, classes)
-            return jsonify({'class': predicted_class})
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-    else:
+    if not text:
         return jsonify({'error': 'No text provided'}), 400
 
-# Serve audio files
+    try:
+        best_class, position = await classify_all(text)
+        return jsonify({'class': best_class, 'position': position})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/audio/<filename>')
 def serve_audio(filename):
     return send_from_directory(AUDIO_DIR, filename)
